@@ -378,6 +378,21 @@ extension Escaner {
                                 "No son datos tuyos, pero hacen falta para algunas funciones y vuelven a ocupar lo mismo en cuanto se descargan.")],
                 enUso: raiz.uso, dueno: raiz.nombre, costes: [.descarga(bytes: tamanos.reduce(0, +))]))
         }
+        // Caché de paquetes .crx de componentes ya descomprimidos (p. ej. 130+ MB duplicados de screen_ai).
+        let crxCache = raiz.raiz.appendingPathComponent("component_crx_cache")
+        if !raiz.electron, Self.esCarpetaReal(crxCache) {
+            let tam = Self.ocupa(crxCache, c)
+            if tam >= minimo {
+                r.append(Elemento(
+                    nombre: "Caché de paquetes de componentes de \(raiz.nombre)",
+                    detalle: "Copias comprimidas (.crx) en component_crx_cache de componentes que \(raiz.nombre) ya descargó y descomprimió (como Screen AI).",
+                    consecuencia: "\(raiz.nombre) vuelve a bajar los paquetes si necesita actualizar un componente. Tus datos y marcadores no se tocan.",
+                    rutas: [crxCache], tamanosRutas: [tam], categoria: .cachesApps, riesgo: .seguro, seleccionado: true,
+                    motivos: [.bien("arrow.triangle.2.circlepath", "Caché de paquetes",
+                                    "Son copias en caché de paquetes .crx de componentes; con \(raiz.nombre) cerrado se pueden limpiar sin perder datos.")],
+                    enUso: raiz.uso, dueno: raiz.nombre, nivel: .maximo, costes: [.descarga(bytes: tam)]))
+            }
+        }
         return r
     }
 

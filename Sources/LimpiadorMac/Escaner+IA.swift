@@ -22,12 +22,73 @@ extension Escaner {
     func desarrolloDeIA(_ c: Contexto) -> [Elemento] {
         notaDeOllamaSinModelos(c)
         return agentesDeNpmSinConfigurar(c) + cursorAgentSinSesion(c) + programasSinEstrenar(c) + versionesDeClaudeCodeNativo(c)
-            + nodesSinUsar(c)
+            + nodesSinUsar(c) + restosDeAntigravityYOpencode(c)
     }
 
     /// Lo que se añade a «Carpetas ocultas».
     func herramientasDeIA(_ c: Contexto) -> [Elemento] {
         puntosDeControlDeClaude(c) + dependenciasDePluginsDeOpencode(c) + cacheDeOpenTUI(c)
+    }
+
+    // MARK: - Temporales de Antigravity/Gemini y snapshots de OpenCode
+
+    /// Entornos temporales (.venv, node_modules) dentro de ~/.gemini/antigravity/brain/*/scratch y tempmediaStorage,
+    /// más los snapshots git internos de ~/.local/share/opencode/snapshot. Nunca toca conversaciones ni artefactos.
+    private func restosDeAntigravityYOpencode(_ c: Contexto) -> [Elemento] {
+        var r: [Elemento] = []
+        let brain = Rutas.enHome(".gemini/antigravity/brain")
+        if Self.iaTipo(brain.path) == S_IFDIR {
+            var rutas: [URL] = []
+            for conv in Self.iaNombres(en: brain.path) where !conv.hasPrefix(".") {
+                if conv == "tempmediaStorage" {
+                    let u = brain.appendingPathComponent(conv)
+                    if Self.iaTipo(u.path) == S_IFDIR,
+                       let cam = Self.ultimoCambioDentro(u.path, c),
+                       Date().timeIntervalSince(cam) >= 86400 {
+                        rutas.append(u)
+                    }
+                    continue
+                }
+                let scratch = brain.appendingPathComponent(conv + "/scratch")
+                guard Self.iaTipo(scratch.path) == S_IFDIR else { continue }
+                for nombre in [".venv", "venv", "node_modules"] {
+                    let u = scratch.appendingPathComponent(nombre)
+                    if Self.iaTipo(u.path) == S_IFDIR { rutas.append(u) }
+                }
+            }
+            let tamanos = rutas.map { Self.medida($0.path, c) }
+            if tamanos.reduce(0, +) >= minimo {
+                r.append(Elemento(
+                    nombre: "Entornos temporales de Antigravity/Gemini",
+                    detalle: "Entornos virtuales (.venv/node_modules) dentro de carpetas scratch o archivos en tempmediaStorage de sesiones anteriores de Antigravity.",
+                    consecuencia: "Tus conversaciones, planes e informes de Antigravity no se tocan: solo se borran entornos temporales en scratch/ y medios temporales.",
+                    rutas: rutas, tamanosRutas: tamanos,
+                    ultimoUso: rutas.compactMap { Self.ultimoCambioDentro($0.path, c) }.max(),
+                    categoria: .desarrollo, riesgo: .seguro, seleccionado: true,
+                    motivos: [.info("sparkles", "Temporales de sesiones",
+                                    "Solo entornos descargados en scratch/ y tempmediaStorage; las bases de conversaciones no se tocan. Entra en «Liberar al máximo».")],
+                    enUso: .app(nombre: "Antigravity", claves: ["com.google.antigravity", "Antigravity"]), dueno: "Antigravity",
+                    nivel: .maximo, costes: [.descarga(bytes: tamanos.reduce(0, +))]))
+            }
+        }
+
+        let snap = Rutas.enHome(".local/share/opencode/snapshot")
+        if Self.iaTipo(snap.path) == S_IFDIR {
+            let tam = Self.medida(snap.path, c)
+            if tam >= minimo {
+                r.append(Elemento(
+                    nombre: "Snapshots internos de OpenCode",
+                    detalle: "Instantáneas git automáticas que OpenCode guarda en ~/.local/share/opencode/snapshot para deshacer cambios en sesiones pasadas.",
+                    consecuencia: "Pierdes los puntos de restauración antiguos de OpenCode, pero tu base de conversaciones (opencode.db) y tu configuración siguen intactas. Va a la Papelera.",
+                    rutas: [snap], tamanosRutas: [tam],
+                    ultimoUso: Self.ultimoCambioDentro(snap.path, c),
+                    categoria: .desarrollo, riesgo: .revisar,
+                    motivos: [.info("clock.arrow.circlepath", "Instantáneas de sesiones",
+                                    "Copias internas de estado para deshacer ediciones en OpenCode. Ciérralo antes de limpiar.")],
+                    enUso: .programas(nombre: "opencode", ejecutables: ["opencode"]), dueno: "opencode"))
+            }
+        }
+        return r
     }
 
     // MARK: - Utilidades de estas reglas
@@ -453,7 +514,7 @@ extension Escaner {
         let versiones = Self.iaNombres(en: carpeta).filter { n in
             guard Self.iaPareceVersion(n), let st = Self.iaStat(carpeta + "/" + n) else { return false }
             return (st.st_mode & S_IFMT) == S_IFREG && st.st_uid == getuid()
-        }.sorted { $0.compare($1, options: .numeric) == .orderedAscending }
+        }.sorted { Self.compararVersion($0, $1) }
         guard versiones.count > 1, let nueva = versiones.last else { return [] }
         let candados = Rutas.enHome(".local/state/claude/locks").path
         let actualizando = ([candados] + Self.iaNombres(en: candados).map { candados + "/" + $0 }).contains { ruta in

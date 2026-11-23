@@ -155,7 +155,8 @@ enum Limpiador {
                 var usadoAhora: String?
                 var existian = 0
                 for (j, url) in el.rutas.enumerated() {
-                    guard Rutas.existe(url) else { continue }
+                    var stExiste = stat()
+                    guard lstat(url.path, &stExiste) == 0 else { continue }
                     existian += 1
                     // Un archivo quieto (la caché de un servicio que siempre está en marcha, un registro de una app abierta)
                     // se vuelve a mirar justo ahora: si se abrió, cambió o ya no es un archivo normal, se salta solo él.
@@ -224,7 +225,7 @@ enum Limpiador {
                             continue
                         }
                         // Algunas carpetas no se pueden mover enteras (permisos): se intenta con su contenido.
-                        let parcial = vaciarContenido(de: url, modo: modoElemento)
+                        let parcial = vaciarContenido(de: url, modo: modoElemento, registro: &registro)
                         movimientos += parcial.movimientos.map {
                             Movimiento(original: $0.0, enPapelera: $0.1, nombre: el.nombre, bytes: 0).identificado()
                         }
@@ -375,18 +376,21 @@ enum Limpiador {
                     sinPermisoApps = true
                     errores.append("\(el.nombre): macOS no me deja modificar apps. Activa LimpiadorMac en Ajustes › Privacidad y seguridad › Gestión de apps y vuelve a limpiar; \(r.comprimidos > 0 ? "lo que ya estaba comprimido se queda así y lo demás, como estaba" : "no toqué nada de la app").")
                 }
+                var firmaBien = true
                 if let app, r.comprimidos > 0 {
+                    let erroresAntes = errores.count
                     let deshecho = comprobarApp(app, el, r, progreso: { progreso(Double(i) / Double(max(elementos.count, 1)), $0) },
                                                 errores: &errores, registro: &registro)
-                    if deshecho > 0 {
-                        // Se descomprimió: lo ahorrado ya no cuenta.
+                    if deshecho > 0 || errores.count > erroresAntes {
+                        // Se descomprimió o la firma quedó dañada: no cuenta como éxito.
+                        firmaBien = false
                         liberado = max(0, liberado - deshecho)
                         comprimido = max(0, comprimido - deshecho)
                     } else {
                         appsComprimidas.append(app)
                     }
                 }
-                ok = r.comprimidos > 0 || (r.fallos.isEmpty && !r.sinEspacio && r.enUsoPor == nil && !r.detenido && !r.sinPermiso)
+                ok = firmaBien && (r.comprimidos > 0 || (r.fallos.isEmpty && !r.sinEspacio && r.enUsoPor == nil && !r.detenido && !r.sinPermiso))
             case .clonar(let union):
                 let r = Clonador.unir(union)
                 liberado = r.ahorro
@@ -638,18 +642,24 @@ enum Limpiador {
         return caja.destino
     }
 
-    private static func vaciarContenido(de url: URL, modo: ModoLimpieza) -> (completo: Bool, movimientos: [(String, String)]) {
-        guard Rutas.esCarpeta(url) else { return (false, []) }
+    private static func vaciarContenido(de url: URL, modo: ModoLimpieza, registro: inout [String]) -> (completo: Bool, movimientos: [(String, String)]) {
+        guard Rutas.esCarpeta(url),
+              let hijos = try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil),
+              !hijos.isEmpty else { return (false, []) }
         var completo = true
         var movimientos: [(String, String)] = []
-        for hijo in Rutas.hijos(url) {
+        for hijo in hijos {
+            guard Seguridad.sePuedeBorrar(hijo) else { completo = false; continue }
+            let modoHijo: ModoLimpieza = Self.esApp(hijo) ? .papelera : modo
             do {
-                if modo == .papelera {
+                if modoHijo == .papelera {
                     var destino: NSURL?
                     try FileManager.default.trashItem(at: hijo, resultingItemURL: &destino)
                     if let d = destino?.path { movimientos.append((hijo.path, d)) }
+                    registro.append("papelera\t0\t\(hijo.path)")
                 } else {
                     try FileManager.default.removeItem(at: hijo)
+                    registro.append("eliminado\t0\t\(hijo.path)")
                 }
             } catch { completo = false }
         }
@@ -820,11 +830,17 @@ enum Historial {
         for m in l.movimientos {
             let origen = URL(fileURLWithPath: m.enPapelera)
             let destino = URL(fileURLWithPath: m.original)
-            guard fm.fileExists(atPath: origen.path) else {
+            var stO = stat()
+            guard lstat(origen.path, &stO) == 0 else {
                 errores.append("\(Formato.rutaCorta(destino)): ya no está en la Papelera.")
                 continue
             }
-            guard !fm.fileExists(atPath: destino.path) else {
+            if let dev = m.dispositivo, let ino = m.inodo, (Int64(stO.st_dev) != dev || stO.st_ino != ino) {
+                errores.append("\(Formato.rutaCorta(destino)): lo que hay en la Papelera con ese nombre ya no es el mismo archivo.")
+                continue
+            }
+            var stD = stat()
+            guard lstat(destino.path, &stD) != 0 else {
                 errores.append("\(Formato.rutaCorta(destino)): ya existe algo con ese nombre; está en la Papelera.")
                 pendientes.append(m)
                 continue

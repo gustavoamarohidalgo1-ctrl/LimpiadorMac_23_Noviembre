@@ -233,11 +233,14 @@ struct Escaner {
             let config = (try? String(contentsOf: avd.appendingPathComponent("config.ini"), encoding: .utf8)) ?? ""
             var nombre = base.replacingOccurrences(of: "_", with: " ")
             var imagenes: [String] = []
-            for linea in config.split(separator: "\n") {
-                let kv = linea.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            for linea in config.split(whereSeparator: \.isNewline) {
+                let kv = linea.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 guard kv.count == 2 else { continue }
                 if kv[0] == "avd.ini.displayname" { nombre = kv[1] }
-                if kv[0].hasPrefix("image.sysdir") { imagenes.append(kv[1].trimmingCharacters(in: CharacterSet(charactersIn: "/"))) }
+                if kv[0].hasPrefix("image.sysdir") {
+                    let norm = kv[1].replacingOccurrences(of: "\\", with: "/").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                    imagenes.append(norm)
+                }
             }
             for img in imagenes { usoImagenes[img, default: []].append(nombre) }
             // Encendido: un proceso con «-avd», un programa con algo abierto en su carpeta o un candado de un proceso vivo.
@@ -440,7 +443,7 @@ struct Escaner {
                 dueno: "Android Studio", nivel: .maximo, costes: [.descarga(bytes: c.indice.bytes(de: fuente))]))
         }
 
-        r += simuladoresIOS()
+        r += simuladoresIOS(c)
         return r
     }
 
@@ -484,13 +487,13 @@ struct Escaner {
             enUso: .emulador(avd: nombre, carpeta: ruta), dueno: "Pruebas de Android")
     }
 
-    private func simuladoresIOS() -> [Elemento] {
+    private func simuladoresIOS(_ c: Contexto) -> [Elemento] {
         // Sin simuladores ni sistemas para ellos, preguntar a simctl solo arrancaría CoreSimulatorService para nada.
         guard Procesos.hayAlgoParaSimctl() else { return [] }
         var r: [Elemento] = []
         let iso = ISO8601DateFormatter()
-        // Cuántos simuladores usa cada sistema iOS y cuándo se usó el último.
-        var simuladores: [String: (cantidad: Int, ultimo: Date?)] = [:]
+        // Cuántos simuladores usa cada sistema iOS, cuándo se usó el último y cuántas apps tienen instaladas.
+        var simuladores: [String: (cantidad: Int, ultimo: Date?, apps: Int)] = [:]
 
         let json = Shell.ejecutar("/usr/bin/xcrun", ["simctl", "list", "devices", "-j"], limite: 30).salida
         if let datos = json.data(using: .utf8),
@@ -499,8 +502,9 @@ struct Escaner {
             for (runtime, dispositivos) in porRuntime {
                 for d in dispositivos where (d["isAvailable"] as? Bool) ?? true {
                     let uso = (d["lastUsedAt"] as? String).flatMap { iso.date(from: $0) }
+                    let nApps = (d["dataPath"] as? String).map { Rutas.hijos(URL(fileURLWithPath: $0 + "/Containers/Bundle/Application")).count } ?? 0
                     let antes = simuladores[runtime]
-                    simuladores[runtime] = ((antes?.cantidad ?? 0) + 1, [antes?.ultimo, uso].compactMap { $0 }.max())
+                    simuladores[runtime] = ((antes?.cantidad ?? 0) + 1, [antes?.ultimo, uso].compactMap { $0 }.max(), (antes?.apps ?? 0) + nApps)
                 }
                 // «iOS-27-0» → «iOS 27.0»
                 let sufijo = runtime.components(separatedBy: "SimRuntime.").last ?? runtime
@@ -523,16 +527,23 @@ struct Escaner {
                             motivos: [.info("moon.zzz.fill", "Nunca encendido", "Vaciarlo no liberaría nada: está igual que recién creado.")],
                             enUso: .simulador(udid: udid), dueno: "Xcode"))
                     } else if disponible {
+                        var motivosSim: [Motivo] = [apps.isEmpty
+                            ? .bien("arrow.counterclockwise", "Conserva el simulador", "Solo se borra su contenido.")
+                            : .aviso("app.fill", "Tiene apps instaladas",
+                                     "Tiene \(apps.count) \(apps.count == 1 ? "app instalada" : "apps instaladas") con sus datos: se borran todas.")]
+                        let assetsSim = dataPath + "/private/var/MobileAsset/AssetsV2"
+                        let bytesAssets = Self.medida(assetsSim, c)
+                        if bytesAssets >= 100_000_000 {
+                            motivosSim.append(.info("icloud.and.arrow.down", "Descargas internas de iOS (\(Formato.bytes(bytesAssets)))",
+                                                    "De lo que pesa este simulador, \(Formato.bytes(bytesAssets)) son recursos internos que iOS bajó dentro (voces, idiomas… en MobileAsset), no tus apps."))
+                        }
                         r.append(Elemento(
                             nombre: "Simulador iOS: \(nombre) (\(version))",
                             detalle: "Apps y datos que instalaste en este simulador.",
                             consecuencia: "El simulador sigue en Xcode, pero vacío, como recién creado.",
                             rutas: [URL(fileURLWithPath: dataPath)], ultimoUso: ultimo,
                             categoria: .emuladores, riesgo: apps.isEmpty ? .revisar : .cuidado, accion: .vaciarSimulador(udid: udid),
-                            motivos: [apps.isEmpty
-                                ? .bien("arrow.counterclockwise", "Conserva el simulador", "Solo se borra su contenido.")
-                                : .aviso("app.fill", "Tiene apps instaladas",
-                                         "Tiene \(apps.count) \(apps.count == 1 ? "app instalada" : "apps instaladas") con sus datos: se borran todas.")],
+                            motivos: motivosSim,
                             enUso: .simulador(udid: udid), dueno: "Xcode"))
                     } else {
                         // No funciona sin su sistema, pero sus datos siguen ahí: si vuelves a instalar esa versión de iOS,
@@ -579,9 +590,21 @@ struct Escaner {
                     enUso: .app(nombre: "Xcode", claves: ["com.apple.dt.Xcode", "com.apple.iphonesimulator"]), dueno: "Xcode"))
             }
             let ids = Set(inutilizables.map(\.id))
+            // Plataformas (iOS, tvOS, watchOS…) que ya tienen al menos un sistema en uso o con apps instaladas.
+            var plataformasConUso = Set<String>()
+            for (id, info) in lista where !ids.contains(id) {
+                guard let identificador = info["runtimeIdentifier"] as? String,
+                      let plataforma = info["platformIdentifier"] as? String else { continue }
+                let usoDelSistema = (info["lastUsedAt"] as? String).flatMap { iso.date(from: $0) }
+                let suyos = simuladores[identificador]
+                if usoDelSistema != nil || suyos?.ultimo != nil || (suyos?.apps ?? 0) > 0 {
+                    plataformasConUso.insert(plataforma)
+                }
+            }
             for (id, info) in lista where !ids.contains(id) {
                 guard let identificador = info["runtimeIdentifier"] as? String, (info["deletable"] as? Bool) == true else { continue }
                 let version = info["version"] as? String ?? "?"
+                let plataforma = info["platformIdentifier"] as? String ?? ""
                 let tamano = (info["sizeBytes"] as? NSNumber)?.int64Value ?? 0
                 let ruta = info["path"] as? String ?? "/Library/Developer/CoreSimulator"
                 let usoDelSistema = (info["lastUsedAt"] as? String).flatMap { iso.date(from: $0) }
@@ -590,12 +613,22 @@ struct Escaner {
                 let dias = ultimo.map { Date().timeIntervalSince($0) / 86400 }
                 let riesgo: Riesgo
                 let motivo: Motivo
+                var nivel: NivelMarcado = .normal
+                var costes: [Coste] = []
+                var seleccionado = false
                 if let suyos {
                     let cuantos = suyos.cantidad == 1 ? "un simulador" : "\(suyos.cantidad) simuladores"
                     if let dias, dias < 30 {
                         riesgo = .cuidado
                         motivo = .aviso("iphone", "Lo usaste hace poco",
                                         "Lo usaste \(Formato.haceCuanto(ultimo).lowercased()) (tienes \(cuantos) con iOS \(version)). Si sigues haciendo apps para iPhone, déjalo.")
+                    } else if ultimo == nil && suyos.apps == 0 && plataformasConUso.contains(plataforma) {
+                        riesgo = .seguro
+                        seleccionado = true
+                        nivel = .maximo
+                        costes = [.descarga(bytes: tamano)]
+                        motivo = .bien("moon.zzz.fill", "Duplicado nunca usado",
+                                       "Ya tienes otro sistema iOS en uso y en este (\(cuantos)) ninguno se ha encendido nunca ni tiene apps. Se vuelve a descargar desde Xcode; entra solo en «Liberar al máximo».")
                     } else {
                         riesgo = .revisar
                         motivo = .info("moon.zzz.fill", ultimo == nil ? "Nunca usado" : "Sin usar",
@@ -604,6 +637,7 @@ struct Escaner {
                     }
                 } else {
                     riesgo = .seguro
+                    seleccionado = true
                     motivo = .bien("checkmark.circle.fill", "Ningún simulador lo usa",
                                    "Ninguno de tus simuladores usa iOS \(version): todos están en otras versiones.")
                 }
@@ -613,9 +647,9 @@ struct Escaner {
                     consecuencia: (suyos == nil ? "" : "Tus simuladores de iOS \(version) dejarán de funcionar hasta que lo vuelvas a descargar. ")
                         + "Xcode lo descarga otra vez desde Ajustes › Componentes (\(Formato.bytes(tamano))).",
                     rutas: [URL(fileURLWithPath: ruta)], tamanoFijo: tamano, ultimoUso: ultimo,
-                    categoria: .emuladores, riesgo: riesgo, seleccionado: suyos == nil, accion: .eliminarRuntime(id: id),
+                    categoria: .emuladores, riesgo: riesgo, seleccionado: seleccionado, accion: .eliminarRuntime(id: id),
                     motivos: [motivo], enUso: .app(nombre: "Xcode", claves: ["com.apple.dt.Xcode", "com.apple.iphonesimulator"]),
-                    dueno: "Xcode"))
+                    dueno: "Xcode", nivel: nivel, costes: costes))
             }
         }
         return r
@@ -1388,9 +1422,12 @@ struct Escaner {
         var usos: [String: [String]] = [:]   // versión → proyectos que la usan
         for w in c.indice.wrappersGradle {
             guard let texto = try? String(contentsOfFile: w, encoding: .utf8),
-                  let linea = texto.split(separator: "\n").first(where: { $0.hasPrefix("distributionUrl") }),
-                  let rango = linea.range(of: "gradle-") else { continue }
-            let version = linea[rango.upperBound...].split(separator: "-").first.map(String.init) ?? ""
+                  let linea = texto.split(whereSeparator: \.isNewline).first(where: { $0.hasPrefix("distributionUrl") }),
+                  let rango = linea.range(of: "gradle-", options: .backwards) else { continue }
+            var version = String(linea[rango.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            for suf in ["-bin.zip", "-all.zip", ".zip", "-bin", "-all"] where version.hasSuffix(suf) {
+                version = String(version.dropLast(suf.count))
+            }
             let proyecto = Rutas.nombre(Rutas.padre(Rutas.padre(Rutas.padre(w))))
             if !version.isEmpty { usos[version, default: []].append(proyecto) }
         }
@@ -3868,13 +3905,15 @@ struct Escaner {
             for h in Rutas.hijos(Rutas.enHome(rel)) {
                 let n = h.lastPathComponent
                 if n.hasPrefix(".") || Self.propios.contains(n) { continue }
+                if rel == "Library/Application Support" && (n == "com.apple.container" || n == "com.docker.install") { continue }
                 if rel == "Library/Caches" && Self.cachesDeDesarrolloEnLibrary.contains(n) { continue }
                 let clave = n.replacingOccurrences(of: ".savedState", with: "")
                 // «TectonicProject.Tectonic» es de la fórmula «tectonic» de Homebrew: no es un resto.
                 if c.apps.estaInstalado(carpeta: clave) || c.apps.esDeUnComando(carpeta: clave) { continue }
                 // El daemon de Kotlin y los registros del emulador de Android no son de una app (`noEsRestoDeApp`).
                 if noEsRestoDeApp(rel, h, c) { continue }
-                candidatos.append(Resto(url: h, nombre: clave, lugar: lugar))
+                let nombreResto = rel == "Library/Group Containers" ? Self.sinPrefijos(n) : clave
+                candidatos.append(Resto(url: h, nombre: nombreResto, lugar: lugar))
             }
         }
         // Los dominios que dejan las pruebas («…Tests.<UUID>.plist») los ofrece «Cachés de desarrollo» (`preferenciasDePruebas`).
@@ -4697,7 +4736,7 @@ struct Escaner {
             return lstat(ruta, &st) == 0 ? Int64(st.st_size) : nil
         }
         let buscados = Set(candidatos.map { Rutas.nombre($0) })
-        var encontrados: [String: Set<Int64>] = [:]
+        var encontrados: [String: [(tamano: Int64, ruta: String)]] = [:]
         autoreleasepool {
             guard let recorrido = FileManager.default.enumerator(at: URL(fileURLWithPath: raiz), includingPropertiesForKeys: nil,
                                                                 options: [.skipsPackageDescendants]) else { return }
@@ -4708,10 +4747,15 @@ struct Escaner {
                 if vistos > 100_000 { break }
                 let n = u.lastPathComponent
                 if n == ".git" || n == "node_modules" || artefactos.contains(u.path) { recorrido.skipDescendants(); continue }
-                if buscados.contains(n), let t = tamano(u.path) { encontrados[n, default: []].insert(t) }
+                if buscados.contains(n), let t = tamano(u.path) { encontrados[n, default: []].append((t, u.path)) }
             }
         }
-        return Set(candidatos.filter { c in tamano(c).map { encontrados[Rutas.nombre(c)]?.contains($0) == true } ?? false })
+        return Set(candidatos.filter { c in
+            guard let t = tamano(c), let lista = encontrados[Rutas.nombre(c)]?.filter({ $0.tamano == t }), !lista.isEmpty else { return false }
+            if t == 0 { return true }
+            guard let hc = Huella.parcial(URL(fileURLWithPath: c), tamano: t) else { return false }
+            return lista.contains { Huella.parcial(URL(fileURLWithPath: $0.ruta), tamano: t) == hc }
+        })
     }
 
     private func ultimoCommit(_ repo: String) -> Date? {
@@ -5154,11 +5198,20 @@ struct Escaner {
                         motivos.append(.info("arrow.up.circle.fill", "Versión más nueva",
                                              "Es la versión \(suya) y tienes instalada la \(instalada): quizá todavía no la instalaste."))
                     } else {
-                        motivos.append(.bien("checkmark.circle.fill", "Ya está instalada",
-                                             "Ya tienes \(app)\(instalada.map { " \($0)" } ?? "") instalada: este instalador ya no hace falta."))
-                        let descargado = a.ruta.hasPrefix(Rutas.enHome("Downloads").path + "/") || a.carpeta == Rutas.enHome("Desktop").path
-                        riesgo = descargado ? .seguro : .revisar
-                        seleccionado = descargado && dias > 3
+                        let fabricantesGenericos: Set<String> = ["google", "microsoft", "adobe", "apple", "meta", "amazon", "oracle", "jetbrains", "cisco", "intel"]
+                        let ambiguo = fabricantesGenericos.contains(programa)
+                        if ambiguo {
+                            motivos.append(.info("questionmark.app.fill", "Nombre genérico (\(programa.capitalized))",
+                                                 "Coincide por fabricante con \(app), pero puede ser otra app distinta del mismo fabricante: compruébalo antes de borrarlo."))
+                            riesgo = .revisar
+                            seleccionado = false
+                        } else {
+                            motivos.append(.bien("checkmark.circle.fill", "Ya está instalada",
+                                                 "Ya tienes \(app)\(instalada.map { " \($0)" } ?? "") instalada: este instalador ya no hace falta."))
+                            let descargado = a.ruta.hasPrefix(Rutas.enHome("Downloads").path + "/") || a.carpeta == Rutas.enHome("Desktop").path
+                            riesgo = descargado ? .seguro : .revisar
+                            seleccionado = descargado && dias > 3
+                        }
                     }
                 } else {
                     motivos.append(.info("questionmark.app.fill", "No lo veo instalado",

@@ -412,13 +412,16 @@ final class Almacen: ObservableObject {
         let pids = CierreDeApps.pedirCierre(b.bundleID)
         let conRestos = indice?.raicesConRestos ?? []
         Task.detached(priority: .userInitiated) {
-            guard CierreDeApps.esperarCierre(pids, maximo: 20) else {
-                await MainActor.run {
-                    self.cierres[b.bundleID]?.estado = .noSeCerro
-                    self.limpiando = false
-                    self.mensajeLimpieza = ""
+            if !pids.isEmpty {
+                guard CierreDeApps.esperarCierre(pids, maximo: 20) else {
+                    await MainActor.run {
+                        self.cierres[b.bundleID]?.estado = .noSeCerro
+                        self.limpiando = false
+                        self.deteniendo = false
+                        self.mensajeLimpieza = ""
+                    }
+                    return
                 }
-                return
             }
             await MainActor.run { self.mensajeLimpieza = "Esperando a que \(b.nombre) suelte sus archivos…" }
             _ = CierreDeApps.esperarQueSuelte(lista)
@@ -511,6 +514,7 @@ final class Almacen: ObservableObject {
     }
 
     func vaciarPapelera() {
+        guard !limpiando else { return }
         limpiando = true
         mensajeLimpieza = "Vaciando la Papelera…"
         let ocupaba = tamanoPapelera
@@ -526,10 +530,14 @@ final class Almacen: ObservableObject {
                 self.limpiando = false
                 self.disco = InfoDisco.actual()
                 self.tamanoPapelera = papelera
-                self.ultimaLimpieza = nil
-                self.elementos.removeAll { $0.accion == .vaciarPapelera }
+                if ok {
+                    self.ultimaLimpieza = nil
+                    self.elementos.removeAll { $0.accion == .vaciarPapelera }
+                } else {
+                    self.ultimaLimpieza = Historial.cargarUltima()
+                }
                 var r = ResultadoLimpieza(
-                    elementosLimpiados: 1, bytesLimpiados: max(0, ocupaba - papelera), libreAntes: antes,
+                    elementosLimpiados: ok ? 1 : 0, bytesLimpiados: max(0, ocupaba - papelera), libreAntes: antes,
                     libreDespues: despues,
                     errores: ok ? [] : ["No se pudo vaciar toda la Papelera. Dale Acceso total al disco a LimpiadorMac."],
                     modo: .definitivo)

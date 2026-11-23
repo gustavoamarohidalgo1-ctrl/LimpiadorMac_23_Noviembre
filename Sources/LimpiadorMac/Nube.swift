@@ -113,9 +113,13 @@ enum Nube {
             while let e = fts_read(fts) {
                 let tipo = Int32(e.pointee.fts_info)
                 if tipo == FTS_D {
-                    // Ni paquetes (una biblioteca de Fotos, una app) ni carpetas de git: se tratan enteros o nunca.
-                    let n = String(cString: e.pointee.fts_path).lowercased()
-                    if e.pointee.fts_level > 0 && (n.hasSuffix(".photoslibrary") || n.hasSuffix(".app") || n.hasSuffix("/.git")) {
+                    // Ni paquetes de macOS (bibliotecas, apps, documentos .pages/.logicx/.xcodeproj/.sparsebundle) ni git:
+                    // se tratan enteros o nunca, para no desalojar piezas sueltas internas.
+                    let rutaDir = String(cString: e.pointee.fts_path)
+                    let n = rutaDir.lowercased()
+                    if e.pointee.fts_level > 0 && (n.hasSuffix(".photoslibrary") || n.hasSuffix(".app") || n.hasSuffix("/.git")
+                        || n.hasSuffix(".sparsebundle") || n.hasSuffix(".sparseimage")
+                        || (try? URL(fileURLWithPath: rutaDir).resourceValues(forKeys: [.isPackageKey]).isPackage) == true) {
                         fts_set(fts, e, FTS_SKIP)
                     }
                     continue

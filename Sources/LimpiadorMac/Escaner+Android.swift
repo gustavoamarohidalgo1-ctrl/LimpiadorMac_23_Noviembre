@@ -51,10 +51,29 @@ extension Escaner {
         ((try? FileManager.default.contentsOfDirectory(atPath: carpeta)) ?? []).filter { !$0.hasPrefix(".") }.sorted()
     }
 
+    /// Compara dos cadenas de versión de menor a mayor respetando pre-lanzamientos:
+    /// «35.0.0-rc4» < «35.0.0» (una versión estable siempre es más nueva que su RC/beta).
+    static func compararVersion(_ a: String, _ b: String) -> Bool {
+        let pa = a.split(separator: "-", maxSplits: 1)
+        let pb = b.split(separator: "-", maxSplits: 1)
+        let baseA = String(pa.first ?? "")
+        let baseB = String(pb.first ?? "")
+        let cmp = baseA.compare(baseB, options: .numeric)
+        if cmp != .orderedSame { return cmp == .orderedAscending }
+        let preA = pa.count > 1 ? String(pa[1]) : nil
+        let preB = pb.count > 1 ? String(pb[1]) : nil
+        switch (preA, preB) {
+        case (nil, nil): return a.compare(b, options: .numeric) == .orderedAscending
+        case (.some, nil): return true   // pre-release < estable
+        case (nil, .some): return false  // estable > pre-release
+        case let (.some(x), .some(y)): return x.compare(y, options: .numeric) == .orderedAscending
+        }
+    }
+
     /// Las versiones (subcarpetas de verdad) de una carpeta, de la más vieja a la más nueva.
     private static func versionesEn(_ carpeta: String) -> [String] {
         visibles(en: carpeta).filter { esCarpetaReal(carpeta + "/" + $0) }
-            .sorted { $0.compare($1, options: .numeric) == .orderedAscending }
+            .sorted { compararVersion($0, $1) }
     }
 
     /// Las versiones de verdad de una carpeta del SDK de Android (build-tools, ndk, cmake), de la más vieja a la más nueva:
@@ -908,11 +927,11 @@ extension Escaner {
         guard let inicio = try? archivo.read(upToCount: 1 << 20), let salto = inicio.firstIndex(of: 10) else { return nil }
         let base = UInt64(salto - inicio.startIndex + 1)
         var tam = stat()
-        guard lstat(carga, &tam) == 0, let total = indice["payload_bytesize"] as? Int,
-              UInt64(tam.st_size) == base + UInt64(total) else { return nil }
+        guard lstat(carga, &tam) == 0, let total = indice["payload_bytesize"] as? Int, total >= 0,
+              tam.st_size >= 0, UInt64(tam.st_size) == base + UInt64(total) else { return nil }
         var r: [String: String] = [:]
         for n in formulas {
-            guard let p = posiciones[n], p.count == 2, p[1] > 0, p[1] < 10_000_000,
+            guard let p = posiciones[n], p.count == 2, p[0] >= 0, p[1] > 0, p[1] < 10_000_000,
                   (try? archivo.seek(toOffset: base + UInt64(p[0]))) != nil,
                   let trozo = try? archivo.read(upToCount: p[1]),
                   let f = try? JSONSerialization.jsonObject(with: trozo) as? [String: Any],

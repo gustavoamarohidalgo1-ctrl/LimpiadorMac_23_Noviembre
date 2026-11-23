@@ -55,10 +55,50 @@ extension Escaner {
 
     // MARK: - Ganchos
 
-    /// Lo que se añade a «Cachés de desarrollo» de Codex: su servidor de terminal parado. (Sus registros van en
-    /// «Registros y fallos»: `registrosDeCodex`.)
+    /// Lo que se añade a «Cachés de desarrollo» de Codex: su servidor de terminal parado y artefactos/imágenes exportadas.
+    /// (Sus registros van en «Registros y fallos»: `registrosDeCodex`.)
     func codexAmpliado(_ c: Contexto) -> [Elemento] {
-        servidorDeCodexParado(c)
+        servidorDeCodexParado(c) + artefactosDeCodex(c)
+    }
+
+    // MARK: - Imágenes generadas y exportaciones de Codex
+
+    /// ~/.codex/generated_images y ~/Library/Application Support/Codex/artifact-sessions/exports: imágenes y exportaciones
+    /// de sesiones pasadas de Codex que se acumulan sin limpieza automática. Siempre Revisar (nunca toca sessions/ ni historial).
+    private func artefactosDeCodex(_ c: Contexto) -> [Elemento] {
+        var r: [Elemento] = []
+        let uso = EnUso.app(nombre: "Codex", claves: ["com.openai.codex", "codex"])
+        let imgDir = Rutas.enHome(".codex/generated_images")
+        if Self.tipoDe(imgDir.path) == S_IFDIR {
+            let tam = Self.medida(imgDir.path, c)
+            if tam >= minimo {
+                r.append(Elemento(
+                    nombre: "Imágenes generadas de Codex",
+                    detalle: "Imágenes generadas o guardadas durante sesiones pasadas en ~/.codex/generated_images.",
+                    consecuencia: "Se borran esas imágenes (van a la Papelera). Tus conversaciones e historial de Codex no se tocan.",
+                    rutas: [imgDir], tamanosRutas: [tam], ultimoUso: Self.ultimoCambioDentro(imgDir.path, c),
+                    categoria: .desarrollo, riesgo: .revisar,
+                    motivos: [.info("photo.on.rectangle", "Salidas de sesiones",
+                                    "Revisa si quieres conservar alguna imagen antes de limpiar. Tu historial de Codex sigue intacto.")],
+                    enUso: uso, dueno: "Codex"))
+            }
+        }
+        let expDir = Rutas.enHome("Library/Application Support/Codex/artifact-sessions/exports")
+        if Self.tipoDe(expDir.path) == S_IFDIR {
+            let tam = Self.medida(expDir.path, c)
+            if tam >= minimo {
+                r.append(Elemento(
+                    nombre: "Exportaciones de sesiones de Codex",
+                    detalle: "Archivos exportados acumulados en ~/Library/Application Support/Codex/artifact-sessions/exports.",
+                    consecuencia: "Se borran esas exportaciones temporales (van a la Papelera). Tus sesiones y proyectos originales no se tocan.",
+                    rutas: [expDir], tamanosRutas: [tam], ultimoUso: Self.ultimoCambioDentro(expDir.path, c),
+                    categoria: .desarrollo, riesgo: .revisar,
+                    motivos: [.info("square.and.arrow.up", "Exportaciones acumuladas",
+                                    "Salidas previas de artifact-sessions de Codex Desktop.")],
+                    enUso: uso, dueno: "Codex"))
+            }
+        }
+        return r
     }
 
     // MARK: - Servidor en segundo plano del codex de la terminal

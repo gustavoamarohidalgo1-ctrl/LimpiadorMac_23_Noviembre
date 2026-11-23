@@ -204,8 +204,8 @@ struct VistaCategoria: View {
                     .help("Marca todo menos lo de «Cuidado»: eso hay que revisarlo y marcarlo uno por uno")
                 // «Nada» es una decisión: lo que se podría marcar cuenta como desmarcado por ti (no se vuelve a marcar solo).
                 Button("Nada") { almacen.elegir(categoria, decision: true) { _ in false } }
-                // Lo que cuesta descargas o esperas (nivel del Modo máximo) se marca a mano.
-                Button("Solo lo seguro") { almacen.elegir(categoria) { $0.riesgo == .seguro && $0.nivel == .normal && $0.avisos.isEmpty } }
+                // Lo que cuesta descargas o esperas (nivel del Modo máximo) o está abierto se marca a mano.
+                Button("Solo lo seguro") { almacen.elegir(categoria) { $0.riesgo == .seguro && $0.nivel == .normal && $0.avisos.isEmpty && !$0.abiertoAhora && $0.marcable } }
                     .help("Marca lo que es seguro y no tiene ningún aviso")
                 if categoria == .apps {
                     // «Sin uso» ya enseña solo lo que lleva esos días sin usarse: el filtro sustituye al botón.

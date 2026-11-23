@@ -226,7 +226,7 @@ struct RepartoEncontrado: Equatable {
             juntas += capa
             let ahora = capa.isEmpty ? antes : Totales.sumaSinRepetir(juntas)
             partes.append(max(0, ahora - antes))
-            antes = ahora
+            antes = max(antes, ahora)
         }
         let esperan = elementos.filter { $0.recomendadoEnEspera && !$0.desmarcadoAMano }
         return RepartoEncontrado(ya: partes[0], maximo: partes[1], cerrandoApps: partes[2], fuera: partes[3],

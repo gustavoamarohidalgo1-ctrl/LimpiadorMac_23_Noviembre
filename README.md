@@ -127,3 +127,23 @@ LIMPIADOR_CASA=/ruta/a/carpeta-de-prueba .build/release/LimpiadorMac --diagnosti
 ```
 
 Con una casa de prueba también se pueden sustituir `/tmp` (`LIMPIADOR_TMP`), los temporales de `/var/folders` (`LIMPIADOR_TEMPORALES`, una carpeta con `T` y `C`), el PATH de la terminal (`LIMPIADOR_PATH`) y Homebrew (`LIMPIADOR_HOMEBREW`); con `LIMPIADOR_SIN_CTIME=1` no se exige la antigüedad del cambio de estado al comprimir. En una casa de prueba solo se miran las apps de su `Applications`, nunca las de verdad. `LIMPIADOR_RAIZ` sustituye a `/` para las reglas que miran `/Library` y `/Applications`, y `LIMPIADOR_SISTEMA` hace de `/` para «Datos del sistema» (AssetsV2, `/Library`, `/private/var`, con las salidas de diskutil y systemextensionsctl en `salidas/` y las preferencias en `Preferencias/<dominio>.plist`); sin ellas, en una casa de prueba esas reglas no miran nada y esa sección dice «No aplica».
+
+## Novedades (v3.3.2)
+
+- **Nuevas detecciones de espacio:**
+  - Cola diferida `/private/var/dirs_cleaner` en «Datos del sistema» (detección sin contraseña vía `lstat` `st_nlink > 2` + medición con contraseña y comando seguro `sudo find ... -mindepth 1 -maxdepth 1 -exec rm -rf {} +`).
+  - Imágenes y snapshots del CLI `container` de Apple (`~/Library/Application Support/com.apple.container`, con lectura de `state.json` y protección si hay contenedores activos).
+  - Actualizaciones pendientes o ya aplicadas de Docker Desktop (`~/Library/Application Support/com.docker.install/in_progress`).
+  - Desbloqueo de `build.db` / `manifest.db` de SwiftPM y `target/site/jacoco/` de Maven como artefactos regenerables (sin marcar falsamente como *Cuidado*).
+  - Entornos temporales (`.venv`/`venv`/`node_modules` en `scratch/` y `tempmediaStorage`) de Antigravity/Gemini y snapshots internos de OpenCode (`~/.local/share/opencode/snapshot`).
+  - Imágenes generadas (`~/.codex/generated_images`) y exportaciones de sesiones de Codex (`~/Library/Application Support/Codex/artifact-sessions/exports`).
+  - Instaladores `.tar.gz`/`.tgz`/`.zip` ya descomprimidos dentro de carpetas `.runtime` de proyectos.
+  - Enlaces simbólicos rotos en `~/.local/bin` y `~/bin` (excluyendo discos externos en `/Volumes/`).
+  - Desglose de descargas internas `MobileAsset/AssetsV2` dentro de simuladores iOS y respaldo para `component_crx_cache` en navegadores Chromium.
+- **«Liberar al máximo» mejorado:**
+  - Incluye en el bloque *«Se vuelve a descargar o a recompilar»* (con casilla visible) runtimes de simulador iOS duplicados nunca usados sin apps, imágenes de Apple `container` sin contenedores activos, actualizaciones pendientes de Docker Desktop, instaladores ya descomprimidos en `.runtime`, entornos temporales de `scratch/` y enlaces rotos.
+  - Tarjeta de acceso directo **«Componentes protegidos en Xcode»** (Modelo predictivo y Documentación protegidos por SIP) con botón «Abrir Xcode» y enlace a «Datos del sistema».
+- **Seguridad, motores e interfaz:**
+  - Detección de secretos `.env.*` (`.env.json`, `.env.ts`, `.env.properties`, `.env.log`) antes del switch por extensión; protección de `$HOME` enlazado, enlaces simbólicos rotos, `/Users/Shared/` ajeno, elementos ubicuos de iCloud y paquetes de documentos en `Nube.swift`.
+  - Borrado seguro de enlaces rotos (`lstat`), validación por hijo en `vaciarContenido`, verificación de firma tras rollback, `chmod 0600` previo en `Compresor` (`com.apple.macl`), exclusión de `UF_IMMUTABLE`/`SF_DATALESS` en `Clonador`, ordenación SemVer real (`35.0.0 > 35.0.0-rc4`), saneado de `comillas(_:)` y corrección de `dictado(_:)`.
+  - Hardware, RAM, SSD y volumen de arranque leídos dinámicamente; búsqueda aislada por categoría; bloqueo de cierre durante limpieza y correcciones en `VistaExplorador`, `VistaCategoria` y `Almacen`.

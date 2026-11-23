@@ -1078,7 +1078,7 @@ fileprivate final class Recorrido {
             } else if a.enInformes && extensionesHechasAMano.contains(clave) {
                 noRegenerables.append(String(cString: e.pointee.fts_path))
             } else {
-                secretoEnArtefacto(e, nombre: nombre, largo: largoNombre, clave: clave, tamano: tamano, acumulador: &a)
+                secretoEnArtefacto(e, st: st, nombre: nombre, largo: largoNombre, clave: clave, tamano: tamano, acumulador: &a)
             }
             return
         }
@@ -1089,6 +1089,11 @@ fileprivate final class Recorrido {
         if (a.zona == .personal || a.zona == .compartida) && tamano > 0 && extensionesResultado.contains(clave) {
             let k = Resultados.clave(nombre, largoNombre, tamano)
             if (resultados[k]?.count ?? 0) < 3 { resultados[k, default: []].append(String(cString: e.pointee.fts_path)) }
+        }
+        // Comprobar nombres especiales (.env.*, .npmrc, .netrc, id_rsa…) antes del switch por extensión,
+        // para que .env.json, .env.properties, .env.ts o .env.log nunca evadan la detección de secretos.
+        if nombre[0] == 46 /* . */ || (largoNombre >= 5 && nombre[0] == 105 && nombre[1] == 100 && nombre[2] == 95) /* id_ */ {
+            nombresEspeciales(e, st: st, nombre: nombre, largo: largoNombre, zona: a.zona)
         }
         let tipo = tablaExtensiones[clave] ?? .otro
         switch tipo {
@@ -1123,8 +1128,6 @@ fileprivate final class Recorrido {
                 intermediosLatex.append(String(cString: e.pointee.fts_path))
             }
         case .latex:
-            // Un «.out» puede llamarse como los archivos especiales (.env.out…): se miran igual que los demás.
-            nombresEspeciales(e, nombre: nombre, largo: largoNombre, zona: a.zona)
             if a.zona == .personal && intermediosLatex.count < Self.topeDeOrden { intermediosLatex.append(String(cString: e.pointee.fts_path)) }
         case .parcial:
             if a.zona == .personal { parciales.append(String(cString: e.pointee.fts_path)) }
@@ -1146,7 +1149,7 @@ fileprivate final class Recorrido {
                 wrappersGradle.append(String(cString: e.pointee.fts_path))
             }
         case .otro:
-            nombresEspeciales(e, nombre: nombre, largo: largoNombre, zona: a.zona)
+            break
         }
 
         if b >= 50_000_000 { grandes.append(indexado(e, st, b, a.zona)) }
@@ -1192,8 +1195,11 @@ fileprivate final class Recorrido {
 
     /// Una llave o contraseña dentro de una carpeta de compilación: la compilación no la crea, así que la puso alguien.
     /// Las copias que mete la propia compilación (perfiles de aprovisionamiento, configuración de Firebase) no cuentan.
-    private func secretoEnArtefacto(_ e: UnsafeMutablePointer<FTSENT>, nombre: UnsafePointer<CChar>, largo: Int,
+    private func secretoEnArtefacto(_ e: UnsafeMutablePointer<FTSENT>, st: stat, nombre: UnsafePointer<CChar>, largo: Int,
                                     clave: UInt64, tamano: Int64, acumulador a: inout Acumulador) {
+        if nombre[0] == 46 /* . */ || (largo >= 5 && nombre[0] == 105 && nombre[1] == 100 && nombre[2] == 95) /* id_ */ {
+            nombresEspeciales(e, st: st, nombre: nombre, largo: largo, zona: a.zona)
+        }
         switch tablaExtensiones[clave] ?? .otro {
         case .clave:
             // Xcode copia el perfil de aprovisionamiento en cada app que compila; un .key grande es una presentación.
@@ -1205,24 +1211,23 @@ fileprivate final class Recorrido {
             let n = String(cString: nombre)
             guard n == "credentials.json" || n.hasPrefix("service-account") || n.hasPrefix("client_secret") else { return }
             sensibles.append(ArchivoSensible(ruta: String(cString: e.pointee.fts_path), tipo: .secreto, zona: a.zona))
-        case .otro, .latex:
-            // .env, .netrc, id_rsa…: primero se mira el nombre byte a byte, que dentro de build/ hay miles de archivos.
-            guard nombre[0] == 46 /* . */ || (largo >= 5 && nombre[0] == 105 && nombre[1] == 100 && nombre[2] == 95) /* id_ */ else { return }
-            nombresEspeciales(e, nombre: nombre, largo: largo, zona: a.zona)
         default:
             return
         }
     }
 
     /// Archivos con pinta de tuyos que en realidad escribe una herramienta al compilar o al medir:
-    /// la base de datos de Xcode y SwiftPM, el índice de búsqueda de Unity y los informes de Compose, JaCoCo, Kover y Criterion.
+    /// la base de datos de Xcode y SwiftPM (llbuild), el índice de búsqueda de Unity y los informes de Compose, JaCoCo, Kover y Criterion.
     private static func generadoPorHerramientas(_ ruta: String) -> Bool {
         ruta.hasSuffix("-composables.csv") || ruta.hasSuffix("/Library/Search/transactions.db")
+            || ruta.hasSuffix("/.build/build.db") || ruta.hasSuffix("/.build/build.db-wal")
+            || ruta.hasSuffix("/.build/build.db-shm") || ruta.hasSuffix("/.build/build.db-journal")
+            || ruta.hasSuffix("/.build/manifest.db")
             || ["/XCBuildData/", "/compose-compiler/", "/compose_compiler/", "/compose-metrics/", "/compose_metrics/",
-                "/compose_reports/", "/reports/jacoco/", "/reports/kover/", "/target/criterion/"].contains { ruta.contains($0) }
+                "/compose_reports/", "/reports/jacoco/", "/target/site/jacoco/", "/reports/kover/", "/target/criterion/"].contains { ruta.contains($0) }
     }
 
-    private func nombresEspeciales(_ e: UnsafeMutablePointer<FTSENT>, nombre: UnsafePointer<CChar>, largo: Int, zona: Zona) {
+    private func nombresEspeciales(_ e: UnsafeMutablePointer<FTSENT>, st: stat, nombre: UnsafePointer<CChar>, largo: Int, zona: Zona) {
         // .env, .env.local, .npmrc, .netrc… y llaves SSH (id_rsa, id_ed25519…)
         if nombre[0] == 46 /* . */ {
             let n = String(cString: nombre)
@@ -1230,7 +1235,8 @@ fileprivate final class Recorrido {
             if (n == ".env" || n.hasPrefix(".env.")) && !plantilla || n == ".netrc" || n == ".pypirc" {
                 sensibles.append(ArchivoSensible(ruta: String(cString: e.pointee.fts_path), tipo: .secreto, zona: zona))
             } else if n == ".npmrc" {
-                // Solo es secreto si guarda un token de acceso.
+                // Solo es secreto si guarda un token de acceso. No leer archivos desalojados de iCloud ni enormes.
+                guard st.st_flags & UInt32(SF_DATALESS) == 0, st.st_size > 0, st.st_size < 256_000 else { return }
                 let ruta = String(cString: e.pointee.fts_path)
                 if let texto = try? String(contentsOfFile: ruta, encoding: .utf8), texto.contains("_auth") || texto.contains("token") {
                     sensibles.append(ArchivoSensible(ruta: ruta, tipo: .secreto, zona: zona))

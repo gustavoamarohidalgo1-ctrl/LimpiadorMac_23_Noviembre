@@ -28,10 +28,23 @@ struct VistaResumen: View {
         .frame(minHeight: 0, maxHeight: .infinity)
     }
 
+    private static let descripcionEquipo: String = {
+        var tam = 0
+        let chip: String
+        if sysctlbyname("machdep.cpu.brand_string", nil, &tam, nil, 0) == 0, tam > 1 {
+            var buf = [CChar](repeating: 0, count: tam)
+            chip = sysctlbyname("machdep.cpu.brand_string", &buf, &tam, nil, 0) == 0 ? String(cString: buf) : "Mac"
+        } else {
+            chip = "Mac"
+        }
+        let ramGB = Int((Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824.0).rounded())
+        return "\(chip) · \(ramGB) GB RAM"
+    }()
+
     private var encabezado: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("LimpiadorMac").font(.largeTitle.weight(.bold))
-            Text("MacBook Air (M2) · 16 GB · SSD de 256 GB · versión \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
+            Text("\(Self.descripcionEquipo) · SSD de \(Formato.bytes(almacen.disco.total)) · versión \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
                 .foregroundStyle(.secondary)
         }
     }

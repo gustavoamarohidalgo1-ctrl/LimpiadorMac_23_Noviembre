@@ -947,10 +947,12 @@ enum Compresor {
             // Si el original cambió mientras se leía, no es que la copia esté mal.
             return EstadoArchivo(ruta: cand.ruta)?.sinCambios(desde: o) ?? false ? .distinta("la copia no es idéntica") : .cambio
         }
-        // Después de leerla (leer cambia la fecha de acceso): permisos, atributos, ACL y fechas del original.
-        if n.modo != o.modo { chmod(copia, o.modo & 0o7777) }
+        // Después de leerla (leer cambia la fecha de acceso): permisos de escritura temporales para copiar xattrs/ACL
+        // incluso si el original era solo lectura (0444), luego permisos finales, y por último fechas.
+        chmod(copia, 0o600)
         guard igualarAtributos(de: cand.ruta, en: copia) else { return .distinta("no pude copiarle sus atributos extendidos") }
         guard igualarACL(de: cand.ruta, en: copia) else { return .distinta("no pude copiarle sus permisos (ACL)") }
+        chmod(copia, o.modo & 0o7777)
         guard ponerFechas(copia, o) else { return .distinta("no pude ponerle sus fechas") }
         // Las mismas banderas que el original, salvo la de la compresión, que es la que cambia.
         let esperada = sentido == .comprimir ? comprimida : 0
@@ -1044,7 +1046,7 @@ enum Compresor {
     }
 
     /// Atributos extendidos que gestiona el propio macOS y ningún programa puede poner ni quitar (ver `igualarAtributos`).
-    static let delSistema: Set<String> = ["com.apple.provenance"]
+    static let delSistema: Set<String> = ["com.apple.provenance", "com.apple.macl"]
 
     /// Deja en la copia la misma lista de control de acceso (ACL) que el original; si el original no tiene, se la quita
     /// (un clon trae la de su fuente).

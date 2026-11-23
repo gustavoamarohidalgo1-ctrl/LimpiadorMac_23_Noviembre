@@ -193,7 +193,7 @@ struct HojaConfirmacion: View {
                     .buttonStyle(.borderedProminent)
                     .tint(modo == .definitivo ? .red : .accentColor)
                     // Mientras se vuelve a mirar qué está en uso, la selección todavía puede cambiar.
-                    .disabled((!cuidado.isEmpty && !entendido) || almacen.comprobando)
+                    .disabled(sel.isEmpty || (!cuidado.isEmpty && !entendido) || almacen.comprobando)
                     .help(almacen.comprobando ? "Espera un momento: estoy mirando qué está en uso"
                           : "Hay que hacer clic: por seguridad, la tecla Enter no borra nada")
                 }
@@ -201,6 +201,7 @@ struct HojaConfirmacion: View {
         }
         .padding(24)
         .frame(width: 580)
+        .interactiveDismissDisabled(almacen.limpiando)
         .onAppear {
             // El modo que elegiste la última vez. Si nunca elegiste uno: «Mover a la Papelera», salvo que todo lo marcado se
             // regenere de verdad, que se puede eliminar y liberar ya (`modoInicial`).
@@ -239,6 +240,7 @@ struct HojaConfirmacion: View {
 /// a mirar qué está en uso; al limpiar, Limpiador lo comprueba otra vez antes de tocar cada cosa.
 struct HojaMaximo: View {
     @EnvironmentObject var almacen: Almacen
+    @ObservedObject private var sistema = EstadoSistema.compartido
     @Environment(\.dismiss) private var cerrar
     /// Lo más alto que puede ser la lista de bloques antes de desplazarse.
     var altoLista: CGFloat = 520
@@ -246,6 +248,13 @@ struct HojaMaximo: View {
     @State private var conCoste = true
     @State private var conAMano = true
     @State private var entendido = false
+
+    /// Recursos de Xcode protegidos por SIP (Modelo predictivo y Documentación) que solo se pueden borrar desde Xcode › Components.
+    private var recursosXcode: [DatosDelSistema.Recurso] {
+        (sistema.informe?.recursos ?? []).filter {
+            ($0.id == .prediccionXcode || $0.id == .documentacionXcode) && $0.liberable > 0
+        }
+    }
 
     var body: some View {
         let plan = PlanMaximo.calcular(almacen.visibles, bloqueos: almacen.bloqueos)
@@ -278,6 +287,12 @@ struct HojaMaximo: View {
                                          elementos: plan.aMano, color: .purple, incluir: $conAMano)
                         }
                         AppsQueBloquean(niveles: conCoste ? [.normal, .maximo] : [.normal], modo: .definitivo, maximo: true)
+                        if !recursosXcode.isEmpty {
+                            TarjetaComponentesXcode(recursos: recursosXcode) {
+                                almacen.seccion = .sistema
+                                cerrar()
+                            }
+                        }
                         ListaAparte(icono: "xmark.shield", titulo: "No lo marco: puede ser valioso o no se puede recuperar",
                                     explicacion: "Revisar y Cuidado: tus archivos, proyectos con algo que no se regenera, historiales, emuladores con datos… Nunca lo marco solo, ni aquí. Si quieres borrar algo, míralo y márcalo tú. Lo que no es Seguro y no puede ir a la Papelera (simuladores, comandos que borran, vaciar la Papelera) no se limpia aquí aunque lo marques: hazlo con «Limpiar», que avisa aparte de lo que no pasa por la Papelera.",
                                     elementos: plan.nunca, razon: { el in
@@ -333,7 +348,11 @@ struct HojaMaximo: View {
         }
         .padding(24)
         .frame(width: 640)
-        .onAppear { almacen.comprobarAppsAbiertas() }
+        .interactiveDismissDisabled(almacen.limpiando)
+        .onAppear {
+            almacen.comprobarAppsAbiertas()
+            sistema.medirSiHaceFalta(papelera: almacen.tamanoPapelera)
+        }
         .onChange(of: almacen.resultado != nil) { _, hay in
             if hay { cerrar() }
         }
@@ -360,6 +379,8 @@ struct HojaMaximo: View {
             partes.append("\(plan.aMano.count) que marcaste tú\(delicados > 0 ? " (\(delicados) de Revisar o Cuidado: a la Papelera)" : "")")
         }
         if !apps.isEmpty { partes.append(apps.count == 1 ? "1 app abierta que bloquea algo" : "\(apps.count) apps abiertas que bloquean algo") }
+        let totalXcode = recursosXcode.reduce(Int64(0)) { $0 + $1.liberable }
+        if totalXcode > 0 { partes.append("componentes en Xcode (\(Formato.bytes(totalXcode)))") }
         if !plan.nunca.isEmpty { partes.append("lo que no marco (\(Formato.bytes(Totales.sumaSinRepetir(plan.nunca))))") }
         if !plan.fuera.isEmpty { partes.append("lo que se queda fuera por ahora (\(Formato.bytes(Totales.sumaSinRepetir(plan.fuera))))") }
         return Group {
@@ -429,6 +450,55 @@ private struct BloqueMaximo: View {
             .background(color.opacity(incluido ? 0.09 : 0.03), in: RoundedRectangle(cornerRadius: 8))
             .opacity(incluido ? 1 : 0.6)
         }
+    }
+}
+
+/// Acceso directo dentro de «Liberar al máximo» para componentes grandes de Xcode protegidos por SIP
+/// (Modelo predictivo y Documentación), que macOS solo deja borrar desde Xcode › Ajustes › Components.
+private struct TarjetaComponentesXcode: View {
+    let recursos: [DatosDelSistema.Recurso]
+    let verEnSistema: () -> Void
+
+    var body: some View {
+        let total = recursos.reduce(Int64(0)) { $0 + $1.liberable }
+        let partes = recursos.map { r -> String in
+            let corto = r.id == .prediccionXcode ? "Modelo predictivo" : "Documentación"
+            return "\(corto) (\(Formato.bytes(r.liberable)))"
+        }
+        let tienePredictivo = recursos.contains { $0.id == .prediccionXcode }
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Label("Componentes protegidos en Xcode", systemImage: "hammer.fill")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.indigo)
+                Spacer()
+                Text(Formato.bytes(total))
+                    .font(.callout.weight(.semibold).monospacedDigit())
+            }
+            Text("\(Formato.lista(partes)). macOS los protege con SIP y ninguna app externa puede borrarlos: solo se quitan desde Xcode y no se vuelven a descargar solos.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("Pulsa «Abrir Xcode» › presiona ⌘, › pestaña Components › selecciona y borra."
+                 + (tienePredictivo ? " Si quitas el modelo predictivo, desmarca también Predictive code completion en Text Editing › Editing." : ""))
+                .font(.caption)
+                .foregroundStyle(.primary.opacity(0.85))
+            HStack(spacing: 8) {
+                Button {
+                    VistaSistema.abrir(.app("com.apple.dt.Xcode"))
+                } label: {
+                    Label("Abrir Xcode", systemImage: "arrow.up.forward.app")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.indigo)
+                .controlSize(.small)
+                Button("Ver en Datos del sistema") { verEnSistema() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
+            .padding(.top, 2)
+        }
+        .padding(10)
+        .background(Color.indigo.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

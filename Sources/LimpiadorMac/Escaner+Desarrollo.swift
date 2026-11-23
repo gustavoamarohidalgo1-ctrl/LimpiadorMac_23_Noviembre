@@ -72,8 +72,95 @@ extension Escaner {
 
     /// Lo que se añade a «Cachés de desarrollo».
     func desarrolloAmpliado(_ c: Contexto) -> [Elemento] {
-        restosDeGit(c) + cachesSueltasDeDesarrollo(c) + paquetesDePipDeUsuario(c) + javasDelIDE(c) + paquetesGlobalesDeNpm(c)
-            + basesDeDatosParadas(c) + preferenciasDePruebas(c)
+        restosDeGit(c) + contenedoresDeApple(c) + cachesSueltasDeDesarrollo(c) + paquetesDePipDeUsuario(c) + javasDelIDE(c)
+            + paquetesGlobalesDeNpm(c) + basesDeDatosParadas(c) + preferenciasDePruebas(c) + enlacesRotosDeComandos(c)
+    }
+
+    // MARK: - Contenedores de Apple (CLI `container`)
+
+    /// Imágenes, capas y snapshots que guarda el CLI `container` de Apple en ~/Library/Application Support/com.apple.container.
+    /// Como empieza por «com.apple.», las reglas genéricas de restos y cachés lo ignoran; una sola imagen (como Playwright)
+    /// puede ocupar 7+ GB aunque el servicio esté apagado. Revisar: las imágenes se vuelven a descargar si las necesitas.
+    private func contenedoresDeApple(_ c: Contexto) -> [Elemento] {
+        let base = Rutas.enHome("Library/Application Support/com.apple.container")
+        guard Self.tipo(base.path) == S_IFDIR else { return [] }
+        let snapshots = base.appendingPathComponent("snapshots")
+        let content = base.appendingPathComponent("content")
+        let rutas = [snapshots, content].filter { Self.tipo($0.path) == S_IFDIR && !Self.nombres(en: $0.path).isEmpty }
+        guard !rutas.isEmpty else { return [] }
+        let tamanos = rutas.map { Self.medida($0.path, c) }
+        guard tamanos.reduce(0, +) >= minimo else { return [] }
+
+        // Leer los nombres de las imágenes en state.json (JSON objeto { "imagen:tag": { ... } }).
+        var imagenes: [String] = []
+        if let texto = Self.leerPequeno(base.appendingPathComponent("state.json").path),
+           let datos = texto.data(using: .utf8),
+           let dict = try? JSONSerialization.jsonObject(with: datos) as? [String: Any] {
+            imagenes = dict.keys.sorted()
+        }
+        let contenedoresActivos = Self.nombres(en: base.appendingPathComponent("containers").path).filter { !$0.hasPrefix(".") }
+        var rutasFinales = rutas
+        var tamanosFinales = tamanos
+        let stateFile = base.appendingPathComponent("state.json")
+        if contenedoresActivos.isEmpty, Self.tipo(stateFile.path) == S_IFREG {
+            rutasFinales.append(stateFile)
+            tamanosFinales.append(Self.medida(stateFile.path, c))
+        }
+        let uso = EnUso.programas(nombre: "Apple container",
+                                  ejecutables: ["container", "container-apiserver", "container-core-images", "vminit"])
+        let cambio = rutas.compactMap { Self.ultimoCambioDentro($0.path, c) }.max()
+        var motivos: [Motivo] = [.info("shippingbox.fill", "Imágenes de contenedores",
+                                       imagenes.isEmpty
+                                           ? "Imágenes y capas OCI guardadas por el CLI «container» de Apple."
+                                           : "Guarda \(imagenes.count == 1 ? "la imagen" : "las imágenes") \(Formato.listaCorta(imagenes, maximo: 3)).")]
+        if !contenedoresActivos.isEmpty {
+            motivos.append(.aviso("exclamationmark.triangle.fill", "Hay contenedores creados",
+                                  "Tienes \(contenedoresActivos.count) \(contenedoresActivos.count == 1 ? "contenedor" : "contenedores") en containers/. Revisa antes de borrar sus capas."))
+        }
+        let sinContenedores = contenedoresActivos.isEmpty
+        return [Elemento(
+            nombre: "Imágenes de Apple container",
+            detalle: "Capas y snapshots descargados por el CLI «container» de Apple en ~/Library/Application Support/com.apple.container"
+                + (imagenes.isEmpty ? "." : " (\(Formato.listaCorta(imagenes, maximo: 3)))."),
+            consecuencia: "Se borran las imágenes y snapshots locales. Si vuelves a usar «container», las descarga otra vez (necesita internet).",
+            rutas: rutasFinales, tamanosRutas: tamanosFinales, ultimoUso: cambio,
+            categoria: .desarrollo, riesgo: sinContenedores ? .seguro : .cuidado, seleccionado: sinContenedores,
+            motivos: motivos, enUso: uso, dueno: "Apple container",
+            nivel: sinContenedores ? .maximo : .nunca,
+            costes: [.descarga(bytes: tamanosFinales.reduce(0, +))])]
+    }
+
+    // MARK: - Enlaces simbólicos rotos en ~/.local/bin y ~/bin
+
+    /// Enlaces simbólicos en ~/.local/bin y ~/bin cuyo destino ya no existe (apps desinstaladas como Postgres.app o CLI viejos).
+    /// Excluye destinos en discos externos (/Volumes/).
+    private func enlacesRotosDeComandos(_ c: Contexto) -> [Elemento] {
+        let carpetas = [Rutas.enHome(".local/bin"), Rutas.enHome("bin")]
+        var rotos: [(url: URL, destino: String)] = []
+        for carpeta in carpetas where Self.tipo(carpeta.path) == S_IFDIR {
+            for n in Self.nombres(en: carpeta.path) where !n.hasPrefix(".") {
+                let u = carpeta.appendingPathComponent(n)
+                guard Self.tipo(u.path) == S_IFLNK,
+                      let dest = try? FileManager.default.destinationOfSymbolicLink(atPath: u.path) else { continue }
+                let resuelto = dest.hasPrefix("/") ? dest : carpeta.appendingPathComponent(dest).standardizedFileURL.path
+                if resuelto.hasPrefix("/Volumes/") { continue }
+                var st = stat()
+                if stat(u.path, &st) != 0 {
+                    rotos.append((u, dest))
+                }
+            }
+        }
+        guard !rotos.isEmpty else { return [] }
+        let nombres = rotos.map { $0.url.lastPathComponent }
+        return [Elemento(
+            nombre: "Enlaces rotos en tu terminal (\(rotos.count))",
+            detalle: "Comandos en ~/.local/bin o ~/bin que apuntan a programas que ya no existen: \(Formato.listaCorta(nombres, maximo: 6)).",
+            consecuencia: "Solo se borran los enlaces simbólicos rotos (ya no funcionan). No ocupa espacio apreciable, pero limpia tu PATH.",
+            rutas: rotos.map(\.url), tamanosRutas: Array(repeating: 0, count: rotos.count),
+            categoria: .desarrollo, riesgo: .seguro, seleccionado: true,
+            motivos: [.bien("link.badge.plus", "Destino inexistente",
+                            "Ninguno de los programas a los que apuntan sigue en este Mac (se ignoran los de discos externos).")],
+            nivel: .maximo, siempreVisible: true)]
     }
 
     /// Lo que se añade a «Carpetas ocultas».
@@ -1321,6 +1408,9 @@ extension Escaner {
         for ruta in c.indice.copiasAMano.sorted() where !cubierta(ruta) {
             let nombre = Rutas.nombre(ruta)
             guard !nombre.hasPrefix("."), Self.tipo(ruta) == S_IFDIR else { continue }
+            // Nunca ofrecer subcarpetas dentro de un repositorio git activo ni en carpetas sincronizadas con la nube.
+            guard Self.repoQueLaContiene(ruta, c) == nil, !Self.enCarpetaSincronizada(ruta),
+                  Self.tipo(ruta + "/.git") == nil else { continue }
             // Una dentro de otra ya va con la de fuera.
             if copias.contains(where: { ruta.hasPrefix($0 + "/") }) { continue }
             let padre = Rutas.padre(ruta)

@@ -177,6 +177,7 @@ struct VistaExplorador: View {
         if let c = cache[destino] {
             hijos = c
             sueltos = 0
+            cargando = false
             return
         }
         // Con índice: instantáneo.
@@ -186,6 +187,7 @@ struct VistaExplorador: View {
             lista.sort { $0.tamano > $1.tamano }
             hijos = lista
             sueltos = max(0, info.bytes - lista.reduce(0) { $0 + $1.tamano })
+            cargando = false
             return
         }
         cargando = true
@@ -198,14 +200,14 @@ struct VistaExplorador: View {
     }
 
     private func moverAPapelera(_ url: URL) {
-        guard Seguridad.sePuedeBorrar(url) else { return }
+        guard !almacen.limpiando, Seguridad.sePuedeBorrar(url) else { return }
         var destino: NSURL?
         do {
             try FileManager.default.trashItem(at: url, resultingItemURL: &destino)
             if let d = destino?.path {
                 let tamano = hijos.first { $0.url == url }?.tamano ?? 0
                 Historial.guardarUltima(LimpiezaGuardada(fecha: Date(), movimientos: [
-                    Movimiento(original: url.path, enPapelera: d, nombre: url.lastPathComponent, bytes: tamano),
+                    Movimiento(original: url.path, enPapelera: d, nombre: url.lastPathComponent, bytes: tamano).identificado(),
                 ]))
                 Historial.registrar(["papelera\t\(tamano)\t\(url.path)"])
             }

@@ -14,7 +14,63 @@ extension Escaner {
         var tomadas = Set(dotnet.flatMap { $0.rutas.map(\.path) })
         let entregas = entregasAnteriores(c, tomadas: tomadas)
         tomadas.formUnion(entregas.flatMap { $0.rutas.map(\.path) })
-        return dotnet + entregas + copiasDescomprimidas(c, tomadas: tomadas)
+        let descomprimidas = copiasDescomprimidas(c, tomadas: tomadas)
+        tomadas.formUnion(descomprimidas.flatMap { $0.rutas.map(\.path) })
+        return dotnet + entregas + descomprimidas + archivosDeRuntimeDescomprimidos(c, tomadas: tomadas)
+    }
+
+    // MARK: - Paquetes de .runtime ya descomprimidos (jdk.tar.gz, maven.tar.gz…)
+
+    /// Dentro de carpetas `.runtime` de tus proyectos, archivos comprimidos (.tar.gz/.tgz/.zip >= 5 MB) que ya tienen su
+    /// carpeta descomprimida al lado (por ejemplo jdk.tar.gz junto a jdk-21… o maven.tar.gz junto a apache-maven-…).
+    private func archivosDeRuntimeDescomprimidos(_ c: Contexto, tomadas: Set<String>) -> [Elemento] {
+        let home = Rutas.home.path
+        var r: [Elemento] = []
+        for ruta in c.indice.carpetas.keys.sorted() where Rutas.nombre(ruta) == ".runtime" {
+            guard ruta.hasPrefix(home + "/"), !AyudaDeEntregas.enNube(ruta),
+                  !tomadas.contains(ruta), !Totales.dentroDe(ruta, tomadas) else { continue }
+            let hijos = AyudaDeEntregas.nombres(ruta)
+            let carpetas = hijos.filter { n in
+                var st = stat()
+                return lstat(ruta + "/" + n, &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR
+            }
+            guard !carpetas.isEmpty else { continue }
+            var sobrantes: [URL] = []
+            var tamanos: [Int64] = []
+            var fechas: [Date] = []
+            for n in hijos {
+                let low = n.lowercased()
+                let base: String
+                if low.hasSuffix(".tar.gz") { base = String(low.dropLast(7)) }
+                else if low.hasSuffix(".tgz") { base = String(low.dropLast(4)) }
+                else if low.hasSuffix(".zip") { base = String(low.dropLast(4)) }
+                else { continue }
+                guard base.count >= 3 else { continue }
+                // Existe una subcarpeta descomprimida cuyo nombre contiene el nombre base (jdk → jdk-21…, maven → apache-maven-…).
+                guard carpetas.contains(where: { $0.lowercased().contains(base) }) else { continue }
+                let p = ruta + "/" + n
+                var st = stat()
+                guard lstat(p, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else { continue }
+                let bytes = Int64(st.st_blocks) * 512
+                let fecha = Date(timeIntervalSince1970: TimeInterval(st.st_mtimespec.tv_sec))
+                guard bytes >= 5_000_000, Date().timeIntervalSince(fecha) >= 3 * 86400 else { continue }
+                sobrantes.append(URL(fileURLWithPath: p))
+                tamanos.append(bytes)
+                fechas.append(fecha)
+            }
+            guard !sobrantes.isEmpty else { continue }
+            let proyecto = Rutas.nombre(Rutas.padre(ruta))
+            r.append(Elemento(
+                nombre: "Instaladores ya descomprimidos en .runtime (\(proyecto))",
+                detalle: "Archivos comprimidos (\(Formato.listaCorta(sobrantes.map(\.lastPathComponent), maximo: 4))) dentro de \(Formato.rutaCorta(ruta)) que ya tienen su carpeta descomprimida al lado.",
+                consecuencia: "Se borran solo los archivos comprimidos (.tar.gz/.zip); las carpetas descomprimidas (JDK, Maven…) no se tocan.",
+                rutas: sobrantes, tamanosRutas: tamanos, ultimoUso: fechas.max(),
+                categoria: .proyectos, riesgo: .seguro, seleccionado: true,
+                motivos: [.bien("archivebox", "Ya descomprimido",
+                                "La carpeta extraída está al lado en la misma .runtime; el archivo comprimido suele ser solo la descarga inicial. Entra en «Liberar al máximo».")],
+                nivel: .maximo, costes: [.descarga(bytes: tamanos.reduce(0, +))]))
+        }
+        return r
     }
 
     /// Lo que se añade a «Archivos olvidados» (va con lo de la categoría: «Orden en tu carpeta» no lo repite) y la nota de

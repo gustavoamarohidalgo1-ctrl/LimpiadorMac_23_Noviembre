@@ -109,7 +109,8 @@ enum Clonador {
         // Cómo está cada uno ahora: lo que cambió desde que se compararon no se toca.
         var estados: [String: Compresor.EstadoArchivo] = [:]
         for a in todos {
-            if let e = Compresor.EstadoArchivo(ruta: a.ruta), e.esRegular, e.tamano == a.tamano, e.modificado == a.modificado {
+            if let e = Compresor.EstadoArchivo(ruta: a.ruta), e.esRegular, e.tamano == a.tamano, e.modificado == a.modificado,
+               e.banderas & banderasProhibidas == 0 {
                 estados[a.ruta] = e
             }
         }

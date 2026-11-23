@@ -55,10 +55,57 @@ extension Escaner {
         if let el = avataresDeZoom(c) { r.append(el) }
         if let el = imagenesDeMail(c) { r.append(el) }
         if let el = episodiosDePodcasts(c) { r.append(el) }
+        if let el = actualizacionDeDocker(c) { r.append(el) }
         r += temporalesDeContenedoresDeApple(c)
         notaDeServidoresQuietos(c)
         notaDeMediosDeWhatsApp(c)
         return r
+    }
+
+    // MARK: - Actualización pendiente o resto de Docker Desktop
+
+    /// ~/Library/Application Support/com.docker.install/in_progress: Docker Desktop descomprime aquí la nueva versión
+    /// completa de Docker.app (~2+ GB) antes de sustituir la instalada. Si la actualización se quedó a medias o ya se
+    /// aplicó, puede quedarse ocupando más de 2 GB indefinidamente.
+    private func actualizacionDeDocker(_ c: Contexto) -> Elemento? {
+        let dir = Rutas.enHome("Library/Application Support/com.docker.install/in_progress")
+        guard Terceros.carpetaPropia(dir) else { return nil }
+        let tam = Self.medida(dir.path, c)
+        guard tam >= minimo else { return nil }
+        let cambio = Self.ultimoCambioDentro(dir.path, c)
+        if let cambio, Date().timeIntervalSince(cambio) < 2 * 3600 { return nil }   // podría estar actualizándose ahora
+        let appNueva = dir.appendingPathComponent("Docker.app")
+        let infoNueva = NSDictionary(contentsOfFile: appNueva.path + "/Contents/Info.plist")
+        let verNueva = infoNueva?["CFBundleShortVersionString"] as? String
+        let infoInst = NSDictionary(contentsOfFile: "/Applications/Docker.app/Contents/Info.plist")
+        let verInst = infoInst?["CFBundleShortVersionString"] as? String
+        let yaInstalada: Bool
+        if let verNueva, let verInst {
+            yaInstalada = verNueva.compare(verInst, options: .numeric) != .orderedDescending
+        } else {
+            yaInstalada = false
+        }
+        let uso = EnUso.app(nombre: "Docker", claves: ["com.docker.docker", "com.electron.dockerdesktop", "docker"])
+        if yaInstalada {
+            return Elemento(
+                nombre: "Actualización ya aplicada de Docker Desktop",
+                detalle: "Copia descomprimida en com.docker.install/in_progress (\(verNueva ?? "Docker.app")) cuando ya tienes instalada la \(verInst ?? "misma o más nueva").",
+                consecuencia: "Docker Desktop sigue funcionando igual; solo se borra el instalador temporal sobrante.",
+                rutas: [dir], tamanosRutas: [tam], ultimoUso: cambio,
+                categoria: .cachesApps, riesgo: .seguro, seleccionado: true,
+                motivos: [.bien("checkmark.circle.fill", "Ya instalada",
+                                "Ya tienes Docker Desktop \(verInst ?? "") en Aplicaciones: esta copia temporal sobra.")],
+                enUso: uso, dueno: "Docker", cambioAnalizado: cambio)
+        }
+        return Elemento(
+            nombre: "Actualización pendiente de Docker Desktop\(verNueva.map { " (\($0))" } ?? "")",
+            detalle: "Docker Desktop dejó descargada y descomprimida una versión nueva\(verNueva.map { " (\($0))" } ?? "") en com.docker.install/in_progress\(verInst.map { " mientras tienes instalada la \($0)" } ?? "").",
+            consecuencia: "Tus contenedores y volúmenes (Docker.raw) no se tocan. Si borras esta descarga ahora, Docker la vuelve a bajar cuando quieras actualizar.",
+            rutas: [dir], tamanosRutas: [tam], ultimoUso: cambio,
+            categoria: .cachesApps, riesgo: .seguro, seleccionado: true,
+            motivos: [.info("arrow.down.app.fill", "Actualización sin aplicar",
+                            "Lleva ahí sin cambios desde \(Formato.haceCuanto(cambio).lowercased()). Se vuelve a descargar al actualizar; entra en «Liberar al máximo».")],
+            enUso: uso, dueno: "Docker", nivel: .maximo, costes: [.descarga(bytes: tam)], cambioAnalizado: cambio)
     }
 
     /// «Temporales del sistema»: los sombreadores de los programas que solo guardan eso en /var/folders/…/C y las cachés de

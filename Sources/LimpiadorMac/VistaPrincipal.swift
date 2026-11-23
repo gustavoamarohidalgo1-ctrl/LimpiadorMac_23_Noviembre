@@ -16,7 +16,7 @@ struct VistaPrincipal: View {
                 case .resumen: VistaResumen()
                 case .explorador: VistaExplorador()
                 case .sistema: VistaSistema()
-                case .categoria(let c): VistaCategoria(categoria: c)
+                case .categoria(let c): VistaCategoria(categoria: c).id(c)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -131,11 +131,15 @@ struct BarraLateral: View {
 struct MiniDisco: View {
     @EnvironmentObject var almacen: Almacen
 
+    private static let nombreVolumen: String = {
+        (try? URL(fileURLWithPath: "/").resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? "Macintosh HD"
+    }()
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Image(systemName: "internaldrive.fill")
-                Text("Macintosh HD").font(.caption.weight(.semibold))
+                Text(Self.nombreVolumen).font(.caption.weight(.semibold))
                 Spacer()
             }
             BarraDisco(fraccion: almacen.disco.fraccionUsada, extra: 0, purgable: almacen.disco.fraccionPurgable)
@@ -202,10 +206,10 @@ struct BarraLimpiar: View {
                     if seleccion.isEmpty {
                         Text("Marca lo que quieras borrar en cada categoría.")
                     } else if delicados > 0 {
-                        Text("\(seleccion.count) elementos · \(delicados) para revisar antes")
+                        Text("\(seleccion.count) \(seleccion.count == 1 ? "elemento" : "elementos") · \(delicados) para revisar antes")
                             .foregroundStyle(.orange)
                     } else {
-                        Text("\(seleccion.count) elementos, todos seguros")
+                        Text("\(seleccion.count) \(seleccion.count == 1 ? "elemento, seguro" : "elementos, todos seguros")")
                             .foregroundStyle(.green)
                     }
                 }

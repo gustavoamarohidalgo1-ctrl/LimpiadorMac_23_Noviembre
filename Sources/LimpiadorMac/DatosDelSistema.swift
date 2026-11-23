@@ -274,7 +274,7 @@ enum DatosDelSistema {
         }
         i.ocultos = ocultos(accesoTotal: i.accesoTotal)
         i.restos = servicios(apps: apps, programas: programas) + extensiones(apps: apps) + recibos()
-            + clonesDeAutoUpdate(programas: programas) + cacheDeSimbolos() + capturasDeRed() + imagenesDeDesarrollo()
+            + clonesDeAutoUpdate(programas: programas) + colaDeBorrado() + cacheDeSimbolos() + capturasDeRed() + imagenesDeDesarrollo()
         if let c = Rutas.temporalesDelSistema.first(where: { $0.hasSuffix("/C") }) {
             i.hayMiniaturas = nombres(en: c).contains("com.apple.quicklook.ThumbnailsAgent")
             if i.hayMiniaturas && deVerdad { i.miniaturas = miniaturasAbiertas() }
@@ -648,7 +648,7 @@ enum DatosDelSistema {
         var porIdioma: [String: Int64] = [:]
         for d in ds { if let l = localeEn(d.especificador) { porIdioma[l, default: 0] += d.bytes } }
         let soporte = "com.apple.assistant.support"
-        let dictadoActivo = numero(preferencia("Dictation Enabled", de: soporte)) ?? true
+        let dictadoActivo = numero(preferencia("Dictation Enabled", de: soporte)) ?? false
         let siriActiva = numero(preferencia("Assistant Enabled", de: soporte)) ?? false
         let sesion = (preferencia("Session Language", de: "com.apple.assistant.backedup") as? String).map(normal)
         let estados = (preferencia("Offline Dictation Status", de: soporte) as? [String: Any]) ?? [:]
@@ -953,6 +953,7 @@ enum DatosDelSistema {
         ("/System/Volumes/Data/.Spotlight-V100", "El índice de Spotlight"),
         ("/System/Volumes/Data/.fseventsd", "El historial de cambios de archivos (lo usan Spotlight, Time Machine y las apps que vigilan carpetas)"),
         ("/System/Volumes/Data/.DocumentRevisions-V100", "Las versiones guardadas de tus documentos"),
+        ("/private/var/dirs_cleaner", "Antiguos /tmp que macOS movió al reiniciar y aún no ha borrado"),
         ("/private/var/folders/zz", "Cachés y temporales de los usuarios del sistema"),
         ("/private/var/root", "La carpeta del usuario root"),
         ("/Library/Caches/com.apple.iconservices.store", "La caché de iconos"),
@@ -985,7 +986,7 @@ enum DatosDelSistema {
     /// carpetas de las otras cuentas de /Users (y Deleted Users), que cuentan en lo que solo ve root: las elige find como
     /// administrador, sin que la app meta ningún nombre en el comando. Quita /Users/Shared y la carpeta de quien tiene la
     /// sesión abierta (el dueño de /dev/console): ya las mide el índice, y recorrerlas tardaría mucho.
-    static let comandoRoot = "/usr/bin/du -skx /System/Volumes/Data/.Spotlight-V100 /System/Volumes/Data/.fseventsd /System/Volumes/Data/.DocumentRevisions-V100 /private/var/db/* /private/var/folders/zz/* /private/var/root /Library/Caches/* /System/Library/Caches/* 2>/dev/null; /usr/bin/find /Users -mindepth 1 -maxdepth 1 -type d ! -name Shared ! -user $(/usr/bin/stat -f %u /dev/console) -exec /usr/bin/du -skx {} + 2>/dev/null; exit 0"
+    static let comandoRoot = "/usr/bin/du -skx /System/Volumes/Data/.Spotlight-V100 /System/Volumes/Data/.fseventsd /System/Volumes/Data/.DocumentRevisions-V100 /private/var/dirs_cleaner /private/var/db/* /private/var/folders/zz/* /private/var/root /Library/Caches/* /System/Library/Caches/* 2>/dev/null; /usr/bin/find /Users -mindepth 1 -maxdepth 1 -type d ! -name Shared ! -user $(/usr/bin/stat -f %u /dev/console) -exec /usr/bin/du -skx {} + 2>/dev/null; exit 0"
 
     /// Ejecuta `comandoRoot` como administrador (macOS pide la contraseña en su propia ventana). nil si se canceló o falló.
     static func medirComoAdministrador() -> [MedidaRoot]? {
@@ -1008,10 +1009,17 @@ enum DatosDelSistema {
     // MARK: - Restos con contraseña
 
     /// Una palabra para la Terminal: tal cual si es segura, entre comillas simples si no.
+    /// Elimina caracteres de control ASCII (ESC, CR, LF…) y controles bidireccionales Unicode para evitar inyección al pegar.
     static func comillas(_ s: String) -> String {
+        let limpio = String(s.unicodeScalars.filter { sc in
+            let v = sc.value
+            if v < 0x20 || v == 0x7F || (v >= 0x80 && v <= 0x9F) { return false }
+            if (v >= 0x202A && v <= 0x202E) || (v >= 0x2066 && v <= 0x2069) || v == 0x200E || v == 0x200F { return false }
+            return true
+        })
         let seguros = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-/+:@")
-        if !s.isEmpty && s.unicodeScalars.allSatisfy(seguros.contains) { return s }
-        return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        if !limpio.isEmpty && !limpio.hasPrefix("-") && limpio.unicodeScalars.allSatisfy(seguros.contains) { return limpio }
+        return "'" + limpio.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     static func ocupa(_ p: String) -> Int64 {
@@ -1075,7 +1083,10 @@ enum DatosDelSistema {
                 } else {
                     continue
                 }
+                let programaReal = Rutas.real(URL(fileURLWithPath: ruta(programa)))
                 let ayudante = programa.hasPrefix("/Library/PrivilegedHelperTools/")
+                    && !programa.contains("/../") && !programa.hasSuffix("/..")
+                    && Rutas.padre(programaReal) == Rutas.real(URL(fileURLWithPath: ruta("/Library/PrivilegedHelperTools")))
                 let motivo: String
                 if !existe {
                     motivo = "Su programa ya no existe (\(Formato.rutaCorta(programa))): macOS lo intenta arrancar y falla."
@@ -1179,6 +1190,19 @@ enum DatosDelSistema {
                           + (actualizando ? " Ahora mismo está actualizando: no lo borres hasta que termine." : " Bórralas solo si no hay ninguna actualización de Office en curso; las vuelve a crear cuando las necesita."),
                       comando: "sudo du -sh \(comillas(clones))\n# Si pesa y Office no se está actualizando:\nsudo rm -rf \(comillas(clones))/*",
                       enMarcha: actualizando)]
+    }
+
+    /// Cola de borrado diferido de macOS (/private/var/dirs_cleaner): al reiniciar, macOS mueve aquí el antiguo /private/tmp
+    /// para borrarlo después, pero a veces acumula decenas de GB sin reclamar. Con lstat se sabe cuántas subcarpetas hay
+    /// (st_nlink - 2) sin necesitar contraseña.
+    static func colaDeBorrado() -> [Resto] {
+        let carpeta = "/private/var/dirs_cleaner"
+        var st = stat()
+        guard lstat(ruta(carpeta), &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR, st.st_nlink > 2 else { return [] }
+        let cuentas = Int(st.st_nlink) - 2
+        return [Resto(id: carpeta, titulo: "Antiguos /tmp atascados en dirs_cleaner (\(cuentas) \(cuentas == 1 ? "carpeta" : "carpetas"))",
+                      detalle: "Cada vez que reinicias, macOS mueve /private/tmp aquí para borrarlo en segundo plano, pero dejó \(cuentas) \(cuentas == 1 ? "carpeta acumulada" : "carpetas acumuladas") sin reclamar (solo root puede medirlas; a veces suman decenas de GB). Comprueba cuánto pesan y vacía solo su contenido — nunca borres la carpeta dirs_cleaner en sí.",
+                      comando: "sudo du -sh \(carpeta)\n# Si ocupa espacio y no necesitas ningún archivo viejo de /tmp:\nsudo find \(carpeta) -mindepth 1 -maxdepth 1 -exec rm -rf {} +")]
     }
 
     /// La caché de símbolos del sistema: solo root la mide.

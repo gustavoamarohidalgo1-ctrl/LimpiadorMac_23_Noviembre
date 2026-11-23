@@ -732,7 +732,7 @@ struct ResultadoLimpieza: Identifiable {
         lista.removeAll { el in
             guard !omitidos.contains(where: { $0.hasPrefix(el.nombre + ":") }) else { return false }
             return el.accion == .borrar
-                ? !el.rutas.contains(where: Rutas.existe)
+                ? !el.rutas.contains(where: { var st = stat(); return lstat($0.path, &st) == 0 })
                 : exitosos.contains(el.id)
         }
         for i in lista.indices where exitosos.contains(lista[i].id) { lista[i].quitarRutasQueYaNoEstan() }
@@ -745,7 +745,7 @@ extension Elemento {
     /// que no se borra por rutas o no se midió ruta a ruta se queda como está.
     mutating func quitarRutasQueYaNoEstan() {
         guard accion == .borrar, tamanoFijo == nil, tamanosRutas.count == rutas.count else { return }
-        let siguen = rutas.indices.filter { Rutas.existe(rutas[$0]) }
+        let siguen = rutas.indices.filter { var st = stat(); return lstat(rutas[$0].path, &st) == 0 }
         guard !siguen.isEmpty, siguen.count < rutas.count else { return }
         // `liberablesRutas` puede tener menos entradas que rutas (las que faltan cuentan lo que ocupan).
         liberablesRutas = siguen.filter { $0 < liberablesRutas.count }.map { liberablesRutas[$0] }
@@ -817,8 +817,10 @@ enum Formato {
         let dias = Int(segundos / 86400)
         if dias == 1 { return "Ayer" }
         if dias < 30 { return "Hace \(dias) días" }
-        let meses = dias / 30
-        if meses < 12 { return meses == 1 ? "Hace 1 mes" : "Hace \(meses) meses" }
+        if dias < 365 {
+            let meses = min(11, dias / 30)
+            return meses == 1 ? "Hace 1 mes" : "Hace \(meses) meses"
+        }
         let anios = dias / 365
         return anios == 1 ? "Hace 1 año" : "Hace \(anios) años"
     }
@@ -826,8 +828,9 @@ enum Formato {
     static func rutaCorta(_ url: URL) -> String { rutaCorta(url.path) }
 
     static func rutaCorta(_ p: String) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return p.hasPrefix(home) ? "~" + p.dropFirst(home.count) : p
+        let home = Rutas.home.path
+        if p == home { return "~" }
+        return p.hasPrefix(home + "/") ? "~" + p.dropFirst(home.count) : p
     }
 
     /// "a, b y c"

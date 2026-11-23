@@ -568,27 +568,32 @@ enum Rutas {
 /// Reglas que impiden borrar cosas importantes pase lo que pase.
 enum Seguridad {
     private static let protegidas: Set<String> = {
-        let h = Rutas.home.path
+        let h = Rutas.real(Rutas.home).lowercased()
         let rel = ["", "Library", "Library/Caches", "Library/Application Support", "Library/Preferences",
                    "Library/Logs", "Library/Containers", "Library/Group Containers", "Library/Keychains",
                    "Library/Mail", "Library/Messages", "Library/Mobile Documents", "Library/CloudStorage",
                    "Library/LaunchAgents", "Desktop", "Documents", "Downloads", "Movies", "Music", "Pictures",
                    "Public", "Applications", ".Trash", ".ssh", ".gnupg", ".config", ".local", ".cache", ".npm",
                    ".gradle", ".android", ".android/avd"]
-        return Set(rel.map { $0.isEmpty ? h : h + "/" + $0 })
+        return Set(rel.map { ($0.isEmpty ? h : h + "/" + $0).lowercased() })
     }()
 
     static func sePuedeBorrar(_ url: URL) -> Bool {
-        let p = Rutas.real(url)
+        var st = stat()
+        let esEnlace = lstat(url.path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFLNK
+        // Para un enlace simbólico (también roto), se valida su propia ubicación (no el destino al que apunta).
+        let p = esEnlace ? (Rutas.real(url.deletingLastPathComponent()) + "/" + url.lastPathComponent) : Rutas.real(url)
         let h = Rutas.real(Rutas.home)
+        let pl = p.lowercased()
         let enTemporales = Rutas.temporalesDelSistema.contains { p.hasPrefix($0 + "/") } || (p.hasPrefix("/private/tmp/") && esTuyo(p))
             // De la carpeta X de /var/folders, solo los clones de firma de los navegadores («<id>.code_sign_clone»).
             || (Rutas.esClonDeFirma(p) && esTuyo(p))
-        guard p.hasPrefix(h + "/") || p.hasPrefix("/Users/Shared/") || enTemporales || esAppBorrable(p) || esDelSistemaBorrable(p) else { return false }
-        if protegidas.contains(p) { return false }
-        if p.contains("/Library/Keychains") || p.contains("/.ssh/") || p.hasSuffix("/.git") { return false }
+        guard p.hasPrefix(h + "/") || (p.hasPrefix("/Users/Shared/") && esTuyo(p)) || enTemporales || esAppBorrable(p) || esDelSistemaBorrable(p) else { return false }
+        if protegidas.contains(pl) { return false }
+        if pl.contains("/library/keychains") || pl.contains("/.ssh/") || pl.contains("/.gnupg/")
+            || pl.contains("/.git/") || pl.hasSuffix("/.git") { return false }
         // Nunca se borra una llave de firma suelta, aunque alguien la seleccione.
-        let ext = url.pathExtension.lowercased()
+        let ext = (p as NSString).pathExtension.lowercased()
         if ext == "jks" || ext == "keystore" { return false }
         return true
     }
@@ -602,11 +607,13 @@ enum Seguridad {
         let h = Rutas.real(Rutas.home)
         if apps, let app = appPropia(p) { return p == app || p.hasPrefix(app + "/") }
         guard p.hasPrefix(h + "/") else { return false }
-        let dentro = String(p.dropFirst(h.count)) + "/"
-        let prohibidas = ["/Library/Keychains/", "/Library/Mail/", "/Library/Messages/", "/Library/Mobile Documents/",
-                          "/Library/CloudStorage/", "/Library/Photos/", "/Library/Containers/", "/Library/Group Containers/",
-                          "/Pictures/", "/.Trash/", "/.ssh/", "/.gnupg/"]
-        return !prohibidas.contains { dentro.hasPrefix($0) } && !dentro.contains(".photoslibrary/") && !dentro.contains("/.ssh/")
+        // Si Escritorio o Documentos están sincronizados en iCloud, no se comprimen/clonan para evitar re-subidas.
+        if (try? url.resourceValues(forKeys: [.isUbiquitousItemKey]).isUbiquitousItem) == true { return false }
+        let dentro = (String(p.dropFirst(h.count)) + "/").lowercased()
+        let prohibidas = ["/library/keychains/", "/library/mail/", "/library/messages/", "/library/mobile documents/",
+                          "/library/cloudstorage/", "/library/photos/", "/library/containers/", "/library/group containers/",
+                          "/pictures/", "/.trash/", "/.ssh/", "/.gnupg/"]
+        return !prohibidas.contains { dentro.hasPrefix($0) } && !dentro.contains(".photoslibrary/") && !dentro.contains("/.ssh/") && !dentro.contains("/.gnupg/")
     }
 
     /// Las carpetas de apps instaladas que se pueden comprimir: /Applications y ~/Applications (y una carpeta dentro,
@@ -646,7 +653,7 @@ enum Seguridad {
         guard p.hasSuffix(".app") else { return false }
         let padre = Rutas.padre(p)
         guard padre == "/Applications" || Rutas.padre(padre) == "/Applications" else { return false }
-        guard let id = Bundle(path: p)?.bundleIdentifier?.lowercased() else { return false }
+        guard let id = Bundle(path: p)?.bundleIdentifier?.lowercased(), id != "com.gustavo.limpiadormac" else { return false }
         return !id.hasPrefix("com.apple.") || id.hasPrefix("com.apple.installassistant")
     }
 
@@ -2020,28 +2027,31 @@ enum HistorialGit {
 }
 
 enum Huella {
-    /// SHA-256 del contenido completo de un archivo, leído por bloques.
+    /// SHA-256 del contenido completo de un archivo, leído por bloques. nil si falla cualquier lectura.
     static func sha256(_ url: URL) -> String? {
         guard let h = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? h.close() }
         var hasher = SHA256()
         while true {
-            guard let bloque = try? h.read(upToCount: 4 * 1024 * 1024), !bloque.isEmpty else { break }
+            guard let bloque = try? h.read(upToCount: 4 * 1024 * 1024) else { return nil }
+            if bloque.isEmpty { break }
             hasher.update(data: bloque)
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Huella rápida: los primeros y los últimos 64 KB. Descarta archivos distintos sin leerlos enteros.
+    /// Huella rápida: los primeros y los últimos 64 KB (cubre el archivo entero hasta 128 KB). Descarta archivos distintos sin leerlos enteros.
     static func parcial(_ url: URL, tamano: Int64) -> String? {
         guard let h = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? h.close() }
         var hasher = SHA256()
         guard let inicio = try? h.read(upToCount: 65_536) else { return nil }
         hasher.update(data: inicio)
-        if tamano > 131_072 {
-            try? h.seek(toOffset: UInt64(tamano - 65_536))
-            if let fin = try? h.read(upToCount: 65_536) { hasher.update(data: fin) }
+        if tamano > 65_536 {
+            let desde = UInt64(max(Int64(65_536), tamano - 65_536))
+            guard (try? h.seek(toOffset: desde)) != nil,
+                  let fin = try? h.read(upToCount: 65_536), !fin.isEmpty else { return nil }
+            hasher.update(data: fin)
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
